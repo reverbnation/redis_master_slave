@@ -18,10 +18,10 @@ module RedisMasterSlave
     def initialize(*args)
       case args.size
       when 1
-        config = args.first
-
+        config = args.first[Rails.env]
+        raise ArgumentError, "Poorly formatted config.  Please include environment, master, and slave" unless config.present?
         master_config = config['master'] || config[:master]
-        slave_configs = config['slaves'] || config[:slaves]
+        slave_configs = config['slaves'] || config[:slaves] || {}
       when 2
         master_config, slave_configs = *args
       else
@@ -60,6 +60,13 @@ module RedisMasterSlave
       slave
     end
 
+    #
+    # Select a specific db for all redis masters and slaves
+    # 
+    def select(db)
+      @master.select(db) && @slaves.each{|s| s.select(db)}
+    end
+
     class << self
       private
 
@@ -67,14 +74,6 @@ module RedisMasterSlave
         class_eval <<-EOS
           def #{command}(*args, &block)
             next_slave.#{command}(*args, &block)
-          end
-        EOS
-      end
-
-      def send_to_master(command)
-        class_eval <<-EOS
-          def #{command}(*args, &block)
-            writable_master.#{command}(*args, &block)
           end
         EOS
       end
@@ -118,14 +117,20 @@ module RedisMasterSlave
     send_to_slave :zscore
 
     # Send everything else to master.
-    def method_missing(name, *args, &block) # :nodoc:
-      if writable_master.respond_to?(name)
-        Client.send(:send_to_master, name)
-        send(name, *args, &block)
+    def method_missing(method, *params, &block) # :nodoc:
+      Rails.logger.debug("redis_master_slave:#{method}(#{params*', '})")
+      if @master.respond_to?(method)
+        @master.send(method, *params)
       else
         super
       end
     end
+
+    def respond_to_with_redis?(symbol, include_private=false)
+      respond_to_without_redis?(symbol, include_private) || 
+        @master.respond_to?(symbol, include_private)
+    end
+    alias_method_chain :respond_to?, :redis
 
     private
 
@@ -147,7 +152,5 @@ module RedisMasterSlave
         config
       end
     end
-
-    alias writable_master master
   end
 end
