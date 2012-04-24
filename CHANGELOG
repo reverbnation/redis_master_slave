@@ -1,3 +1,7 @@
+== 0.1.2 2012-04-24
+
+ * Making the client actually use the passed config a second time.
+
 == 0.1.1 2012-04-24
 
  * Making the client actually use the passed config
