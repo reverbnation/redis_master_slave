@@ -31,6 +31,7 @@ module RedisMasterSlave
       @master = make_client(master_config) or
         extend ReadOnly
       @slaves = slave_configs.map{|config| make_client(config)}
+      @lb_slaves = slave_configs.map{|config| make_client(config) if config[:lb]}
       @index  = 0
     end
 
@@ -45,18 +46,34 @@ module RedisMasterSlave
     attr_accessor :slaves
 
     #
+    # The slave client.
+    #
+    attr_accessor :lb_slaves
+
+    #
     # Index of the slave to use for the next read.
     #
     attr_accessor :index
 
     #
-    # Return the next read slave to use.
+    # Return the next slave to use.
     #
     # Each call returns the following slave in sequence.
     #
     def next_slave
       slave = slaves[index]
       @index = (index + 1) % slaves.size
+      slave
+    end
+
+    #
+    # Return the next slave to use for a read operation
+    #
+    # Each call returns the following slave in sequence.
+    #
+    def next_lb_slave
+      slave = lb_slaves[index]
+      @index = (index + 1) % lb_slaves.size
       slave
     end
 
@@ -79,42 +96,13 @@ module RedisMasterSlave
       end
     end
 
-    send_to_slave :dbsize
-    send_to_slave :exists
-    send_to_slave :get
-    send_to_slave :getbit
-    send_to_slave :getrange
-    send_to_slave :hexists
-    send_to_slave :hget
-    send_to_slave :hgetall
-    send_to_slave :hkeys
-    send_to_slave :hlen
-    send_to_slave :hmget
-    send_to_slave :hvals
-    send_to_slave :keys
-    send_to_slave :lindex
-    send_to_slave :llen
-    send_to_slave :lrange
-    send_to_slave :mget
-    send_to_slave :randomkey
-    send_to_slave :scard
-    send_to_slave :sdiff
-    send_to_slave :sinter
-    send_to_slave :sismember
-    send_to_slave :smembers
-    send_to_slave :sort
-    send_to_slave :srandmember
-    send_to_slave :strlen
-    send_to_slave :sunion
-    send_to_slave :ttl
-    send_to_slave :type
-    send_to_slave :zcard
-    send_to_slave :zcount
-    send_to_slave :zrange
-    send_to_slave :zrangebyscore
-    send_to_slave :zrank
-    send_to_slave :zrevrange
-    send_to_slave :zscore
+      [:dbsize, :exists, :get, :getbit, :getrange, 
+       :hexists, :hget, :hgetall, :hkeys, :hlen, :hmget, 
+       :hvals, :keys, :lindex, :llen, :lrange, :mget, 
+       :randomkey, :scard, :sdiff, :sinter, :sismember, 
+       :smembers, :sort, :srandmember, :strlen, :sunion, 
+       :ttl, :type, :zcard, :zcount, :zrange, :zrangebyscore, 
+       :zrank, :zrevrange, :zscore].each {|m| send_to_slave m} if @lb_slaves.size
 
     # Send everything else to master.
     def method_missing(method, *params, &block) # :nodoc:
