@@ -9,6 +9,13 @@ module RedisMasterSlave
   # master.
   #
   class Client
+    REDIS_SLAVE_METHODS = [:dbsize, :exists, :get, :getbit, :getrange, 
+                           :hexists, :hget, :hgetall, :hkeys, :hlen, :hmget, 
+                           :hvals, :keys, :lindex, :llen, :lrange, :mget, 
+                           :randomkey, :scard, :sdiff, :sinter, :sismember, 
+                           :smembers, :sort, :srandmember, :strlen, :sunion, 
+                           :ttl, :type, :zcard, :zcount, :zrange, :zrangebyscore, 
+                           :zrank, :zrevrange, :zscore]    
     #
     # Create a new client.
     #
@@ -30,9 +37,11 @@ module RedisMasterSlave
 
       @master = make_client(master_config) or
         extend ReadOnly
-      @slaves = slave_configs.map{|config| make_client(config)}
-      @lb_slaves = slave_configs.map{|config| make_client(config) if config[:lb]}
-      @index  = 0
+      @failover_slaves = slave_configs.map{|config| make_client(config)}
+      @lb_slaves = slave_configs.select{|config| config["in_lb"]}.map{|config| make_client(config) }
+      @failover_index  = 0
+      @lb_index  = 0
+
     end
 
     #
@@ -43,7 +52,7 @@ module RedisMasterSlave
     #
     # The slave client.
     #
-    attr_accessor :slaves
+    attr_accessor :failover_slaves
 
     #
     # The slave client.
@@ -53,16 +62,21 @@ module RedisMasterSlave
     #
     # Index of the slave to use for the next read.
     #
-    attr_accessor :index
+    attr_accessor :lb_index
 
     #
-    # Return the next slave to use.
+    # Index of the slave to use for the next failover.
+    #
+    attr_accessor :failover_index
+
+    #
+    # Return the next failover slave to use.
     #
     # Each call returns the following slave in sequence.
     #
-    def next_slave
-      slave = slaves[index]
-      @index = (index + 1) % slaves.size
+    def next_failover_slave
+      slave = failover_slaves[@failover_index]
+      @failover_index = (@failover_index + 1) % slaves.size
       slave
     end
 
@@ -72,8 +86,8 @@ module RedisMasterSlave
     # Each call returns the following slave in sequence.
     #
     def next_lb_slave
-      slave = lb_slaves[index]
-      @index = (index + 1) % lb_slaves.size
+      slave = lb_slaves[@lb_index]
+      @lb_index = (@lb_index + 1) % lb_slaves.size
       slave
     end
 
@@ -81,33 +95,17 @@ module RedisMasterSlave
     # Select a specific db for all redis masters and slaves
     # 
     def select(db)
-      @master.select(db) && @slaves.each{|s| s.select(db)}
+      @master.select(db) && 
+        @failover_slaves.each{|s| s.select(db)} &&
+        @lb_slaves.each{|s| s.select(db)}
     end
-
-    class << self
-      private
-
-      def send_to_slave(command)
-        class_eval <<-EOS
-          def #{command}(*args, &block)
-            next_slave.#{command}(*args, &block)
-          end
-        EOS
-      end
-    end
-
-      [:dbsize, :exists, :get, :getbit, :getrange, 
-       :hexists, :hget, :hgetall, :hkeys, :hlen, :hmget, 
-       :hvals, :keys, :lindex, :llen, :lrange, :mget, 
-       :randomkey, :scard, :sdiff, :sinter, :sismember, 
-       :smembers, :sort, :srandmember, :strlen, :sunion, 
-       :ttl, :type, :zcard, :zcount, :zrange, :zrangebyscore, 
-       :zrank, :zrevrange, :zscore].each {|m| send_to_slave m} if @lb_slaves.size
 
     # Send everything else to master.
     def method_missing(method, *params, &block) # :nodoc:
       Rails.logger.debug("redis_master_slave:#{method}(#{params*', '})")
-      if @master.respond_to?(method)
+      if (@lb_slaves.size > 0) && REDIS_SLAVE_METHODS.include?(method)
+        next_lb_slave.send(method)
+      elsif @master.respond_to?(method)
         @master.send(method, *params)
       else
         super
