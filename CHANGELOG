@@ -1,4 +1,4 @@
-== LATEST
+== 0.1.4 2012-04-26
 
  * Adding failover because that's what is needed and tests because, well, they're pretty handy.
 
