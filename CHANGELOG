@@ -1,6 +1,6 @@
 == LATEST
 
- * Adding tests because, well, they're pretty handy.
+ * Adding failover because that's what is needed and tests because, well, they're pretty handy.
 
 == 0.1.3 2012-04-24
 

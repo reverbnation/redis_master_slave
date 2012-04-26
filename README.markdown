@@ -1,9 +1,6 @@
 ## Redis Master Slave
 
-Redis master-slave client for Ruby.
-
-Writes are directed to a master Redis server, while reads are distributed
-round-robin across any number of slaves.
+Redis master-slave client for Ruby, currently only implemented for failover.
 
 ## Usage
 
@@ -28,14 +25,24 @@ Ideal for configuration via YAML file.
 
 Example YAML file:
 
-    master:
-      host: localhost
-      port: 6379
-    slaves:
-      - host: localhost
-        port: 6380
-      - host: localhost
-        port: 6381
+    development:
+      master:
+          host: localhost
+          port: 6379
+      slaves:
+          - host: localhost
+            port: 6380
+          - host: localhost
+            port: 6381
+    production:
+      master:
+          host: redishost1
+          port: 6379
+      slaves:
+          - host: redishost2
+            port: 6380
+          - host: redishost3
+            port: 6381
 
 #### URL strings
 

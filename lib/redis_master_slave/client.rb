@@ -1,5 +1,5 @@
 require 'uri'
-
+require 'timeout'
 module RedisMasterSlave
   #
   # Wrapper around a pair of Redis connections, one master and one
@@ -9,6 +9,8 @@ module RedisMasterSlave
   # master.
   #
   class Client
+    attr_accessor :redis_timeout
+    attr_accessor :redis_retry_times
     #
     # Create a new client.
     #
@@ -18,8 +20,9 @@ module RedisMasterSlave
     def initialize(*args)
       case args.size
       when 1
-        config = args.first[Rails.env]
-        raise ArgumentError, "Poorly formatted config.  Please include environment, master, and slave" unless config.present?
+        # config = args.first[Rails.env]
+        config = args.first[ENV["RAILS_ENV"]]
+        raise ArgumentError, "Poorly formatted config.  Please include environment, master, and slave" if config.nil?
         master_config = config['master'] || config[:master]
         slave_configs = config['slaves'] || config[:slaves] || {}
       when 2
@@ -28,11 +31,12 @@ module RedisMasterSlave
         raise ArgumentError, "wrong number of arguments (#{args.size} for 1..2)"
       end
 
-      @master = make_client(master_config) or
+      @acting_master = @master = make_client(master_config) or
         extend ReadOnly
-      @slaves = slave_configs.map{|config| make_client(config)}
-      @lb_slaves = slave_configs.map{|config| make_client(config) if config[:lb]}
-      @index  = 0
+      @failover_slaves = slave_configs.map{|config| make_client(config)}
+      @failover_index  = 0
+      @redis_timeout=15
+      @redis_retry_times=5
     end
 
     #
@@ -41,74 +45,71 @@ module RedisMasterSlave
     attr_accessor :master
 
     #
-    # The slave client.
+    # The client who is acting as master (normally @master)
     #
-    attr_accessor :slaves
+    attr_accessor :acting_master
 
     #
-    # The slave client.
+    # The array of slave clients.
     #
-    attr_accessor :lb_slaves
+    attr_accessor :failover_slaves
 
     #
-    # Index of the slave to use for the next read.
+    # Index of the slave to use for the next failover.
     #
-    attr_accessor :index
+    attr_accessor :failover_index
 
     #
-    # Return the next slave to use.
+    # Return the next failover slave to use.
     #
-    # Each call returns the following slave in sequence.
-    #
-    def next_slave
-      slave = slaves[index]
-      @index = (index + 1) % slaves.size
-      slave
-    end
-
-    #
-    # Return the next slave to use for a read operation
-    #
-    # Each call returns the following slave in sequence.
-    #
-    def next_lb_slave
-      slave = lb_slaves[index]
-      @index = (index + 1) % lb_slaves.size
+    def next_failover_slave
+      slave = @failover_slaves[@failover_index]
+      @failover_index = (@failover_index + 1) % @failover_slaves.size
       slave
     end
 
     #
     # Select a specific db for all redis masters and slaves
+    #
+    # TODO: make this non-blocking so that if one fails, they don't all fail.
     # 
     def select(db)
-      @master.select(db) && @slaves.each{|s| s.select(db)}
+      @master.select(db) && 
+        @failover_slaves.each{|s| s.select(db)}
     end
 
-    class << self
-      private
-
-      def send_to_slave(command)
-        class_eval <<-EOS
-          def #{command}(*args, &block)
-            next_slave.#{command}(*args, &block)
-          end
-        EOS
-      end
+    #
+    # Failover to the next slave
+    # 
+    def failover!
+      @acting_master = next_failover_slave
     end
 
-      [:dbsize, :exists, :get, :getbit, :getrange, 
-       :hexists, :hget, :hgetall, :hkeys, :hlen, :hmget, 
-       :hvals, :keys, :lindex, :llen, :lrange, :mget, 
-       :randomkey, :scard, :sdiff, :sinter, :sismember, 
-       :smembers, :sort, :srandmember, :strlen, :sunion, 
-       :ttl, :type, :zcard, :zcount, :zrange, :zrangebyscore, 
-       :zrank, :zrevrange, :zscore].each {|m| send_to_slave m} if @lb_slaves.size
-
-    # Send everything else to master.
+    # Send everything master.
     def method_missing(method, *params, &block) # :nodoc:
-      Rails.logger.debug("redis_master_slave:#{method}(#{params*', '})")
-      if @master.respond_to?(method)
-        @master.send(method, *params)
+      # Rails.logger.debug("redis_master_slave:#{method}(#{params*', '})")
+      puts("redis_master_slave:#{method}(#{params*', '})")
+      if @acting_master.respond_to?(method)
+        i,j=0,0
+        begin
+          Timeout.timeout(@redis_timeout) do
+            puts "in timeout"
+            @acting_master.send(method, *params)
+          end
+        rescue Timeout::Error
+          puts "rescuing timeout #{i} #{j}"
+          if (i+=1)>=@redis_retry_times
+            failover!
+            i=0
+            j+=1
+          end
+
+          if (j<@failover_slaves.size)
+            retry
+          end
+        ensure
+          raise RedisMasterSlave::FailoverEvent if (i>0)
+        end
       else
         super
       end
@@ -116,9 +117,10 @@ module RedisMasterSlave
 
     def respond_to_with_redis?(symbol, include_private=false)
       respond_to_without_redis?(symbol, include_private) || 
-        @master.respond_to?(symbol, include_private)
+        @acting_master.respond_to?(symbol, include_private)
     end
-    alias_method_chain :respond_to?, :redis
+    alias_method :respond_to_without_redis?, :respond_to?
+    alias_method :respond_to?, :respond_to_with_redis?
 
     private
 
