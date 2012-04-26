@@ -1,8 +1,0 @@
-require 'test/unit'
-require 'mocha'
-
-class FailoverTest < Test::Unit::TestCase
-  def test_simple
-    assert(false)
-  end
-end
