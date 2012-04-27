@@ -14,7 +14,7 @@ class FakeRedisClient
     @hash = {0=>{}}
     @db = 0
     @max_delayed_calls = 100
-    @call = -1
+    @call = 0
   end
 
   def get(key)
@@ -101,8 +101,8 @@ class FailoverTest < Test::Unit::TestCase
   def test_simple_failover
     master=FakeRedisClient.new
     def master.set(key, val)
-      puts "sleeping 15 seconds"
-      sleep(15)
+      puts "sleeping 10 seconds...."
+      sleep(10)
       @hash[@db][key]=val
       "OK"
     end
@@ -123,8 +123,9 @@ class FailoverTest < Test::Unit::TestCase
     master=FakeRedisClient.new
     def master.set(key, val)
       @call+=1
-      if (@call<@max_delayed_calls)
-        puts "sleeping 15 seconds(#{@call})"
+      puts "call:#{@call}; max:#{@max_delayed_calls}"
+      if (@call<=@max_delayed_calls)
+        puts "sleeping 15 seconds"
         sleep(15)
       end
 
