@@ -107,6 +107,7 @@ module RedisMasterSlave
             j+=1
           end
 
+          # make sure we only failover if there's a slave
           if (j<@failover_slaves.size)
             retry
           end
