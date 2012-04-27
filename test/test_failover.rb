@@ -13,7 +13,7 @@ class FakeRedisClient
   def initialize
     @hash = {0=>{}}
     @db = 0
-    @max_delayed_calls = 100
+    @max_delayed_calls = 0
     @call = 0
   end
 
@@ -22,6 +22,10 @@ class FakeRedisClient
   end
 
   def set(key, val)
+    @call+=1
+    if (@call<=@max_delayed_calls)
+      sleep(15)
+    end
     @hash[@db][key]=val
     "OK"
   end
@@ -101,7 +105,6 @@ class FailoverTest < Test::Unit::TestCase
   def test_simple_failover
     master=FakeRedisClient.new
     def master.set(key, val)
-      puts "sleeping 10 seconds...."
       sleep(10)
       @hash[@db][key]=val
       "OK"
@@ -112,9 +115,9 @@ class FailoverTest < Test::Unit::TestCase
     rms.redis_retry_times=3
 
     assert_equal(nil, rms.get("a"))
-    # assert_raise Timeout::Error do 
+    assert_raise RedisMasterSlave::FailoverEvent do 
       rms.set("a",2)
-    # end
+    end
     assert_equal(2, rms.get("a"))
     assert_equal(rms.acting_master, rms.failover_slaves[0])
   end
@@ -123,9 +126,7 @@ class FailoverTest < Test::Unit::TestCase
     master=FakeRedisClient.new
     def master.set(key, val)
       @call+=1
-      puts "call:#{@call}; max:#{@max_delayed_calls}"
       if (@call<=@max_delayed_calls)
-        puts "sleeping 15 seconds"
         sleep(15)
       end
 
@@ -157,4 +158,46 @@ class FailoverTest < Test::Unit::TestCase
     assert_equal(rms.acting_master, master)
   end
 
+  def test_multiple_failover
+    master=FakeRedisClient.new
+    slave0=FakeRedisClient.new
+    slave1=FakeRedisClient.new
+
+    rms = RedisMasterSlave.new(master,[slave0,slave1])
+    rms.redis_timeout=1
+    rms.redis_retry_times=3
+    master.max_delayed_calls=100
+
+    # Make sure it fails over to slave0 first
+    assert_equal(nil, rms.get("a"))
+    assert_raise RedisMasterSlave::FailoverEvent do 
+      rms.set("a",2)
+    end
+    assert_equal(2, rms.get("a"))
+    assert_equal(rms.acting_master, rms.failover_slaves[0])
+
+    # Test second failover
+    slave0.call=0
+    slave0.max_delayed_calls=10
+
+    assert_equal(2, rms.get("a"))
+    assert_raise RedisMasterSlave::FailoverEvent do 
+      rms.set("a",3)
+    end
+    assert_equal(3, rms.get("a"))
+    assert_equal(rms.acting_master, rms.failover_slaves[1])
+
+    # # Test third failover
+    # slave0.call=0
+    # slave0.max_delayed_calls=10
+
+    # assert_equal(2, rms.get("a"))
+    # assert_raise RedisMasterSlave::FailoverEvent do 
+    #   rms.set("a",3)
+    # end
+    # assert_equal(3, rms.get("a"))
+    # assert_equal(rms.acting_master, rms.failover_slaves[1])
+
+
+  end    
 end

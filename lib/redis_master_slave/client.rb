@@ -85,81 +85,35 @@ module RedisMasterSlave
     def failover!
       @acting_master = next_failover_slave
     end
-    def define_master_method(method)
-      end
 
+    # This works, but is ugly.
+    # TODO: make the method_missing memoize a class method
     def method_missing(method, *params, &block) # :nodoc:
-      # Rails.logger.debug("redis_master_slave:#{method}(#{params*', '})")
-      puts("redis_master_slave:#{method}(#{params*', '})")
+      # puts("redis_master_slave:#{method}(#{params*', '})")
       if @acting_master.respond_to?(method)
         i,j=0,0
         begin
           Timeout.timeout(@redis_timeout) do
-            puts "in timeout"
             @acting_master.send(method, *params)
           end
         rescue Timeout::Error
-          puts "rescuing timeout #{i} #{j}"
           if (i+=1)>=@redis_retry_times
-            puts "failover!"
             failover!
             i=0
             j+=1
           end
-
+          
           # make sure we only failover if there's a slave
           if (j<@failover_slaves.size)
             retry
           end
         ensure
-          raise RedisMasterSlave::FailoverEvent if (i>0)
+          raise RedisMasterSlave::FailoverEvent if (i>0) || (j>0)
         end
       else
         super
       end
     end
-
-    # # Send everything to master.
-    # def method_missing(method, *params, &block) # :nodoc:
-    #   # Rails.logger.debug("redis_master_slave:#{method}(#{params*', '})")
-    #   puts("redis_master_slave:#{method}(#{params*', '})")
-    #   if @acting_master.respond_to?(method)
-    #     # puts "defining #{method}"
-    #     # Client.class_eval <<-EOS
-    #     #   def #{method}(*args, &block)
-    #     #   puts "hey"
-    #     i,j=0,0
-    #     begin
-    #       Timeout.timeout(@redis_timeout) do
-    #         puts "in timeout loop"
-    #         @acting_master.method(*args, &block)
-    #       end
-    #     rescue Timeout::Error
-    #       puts "timeout caught"
-    #       puts "i:" + i.to_s + " j:" + j.to_s
-    #       puts @redis_retry_times
-    #       if (i+=1)>=@redis_retry_times
-    #         puts "failover!"
-    #         failover!
-    #         i=0
-    #         j+=1
-    #       end
-
-    #       if (j<@failover_slaves.size)
-    #         retry
-    #       end
-    #     ensure
-    #       raise RedisMasterSlave::FailoverEvent if (i>0)
-    #     end
-    #   end
-    #   # EOS
-    #     # define_master_method(method)
-    #     # puts "calling #{method}"
-    #     # @acting_master.send(method, *params)
-    #   else
-    #     super
-    #   end
-    # end
 
     def respond_to_with_redis?(symbol, include_private=false)
       respond_to_without_redis?(symbol, include_private) || 
