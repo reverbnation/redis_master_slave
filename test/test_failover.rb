@@ -7,10 +7,14 @@ require 'redis_master_slave'
 
 class FakeRedisClient
   attr_accessor :db
+  attr_accessor :call
+  attr_accessor :max_delayed_calls
 
   def initialize
     @hash = {0=>{}}
     @db = 0
+    @max_delayed_calls = 100
+    @call = -1
   end
 
   def get(key)
@@ -94,7 +98,7 @@ class FailoverTest < Test::Unit::TestCase
     assert_equal(rms.acting_master, rms.failover_slaves[1])
   end
 
-  def test_automatic_failover_simple
+  def test_simple_failover
     master=FakeRedisClient.new
     def master.set(key, val)
       puts "sleeping 15 seconds"
@@ -114,4 +118,42 @@ class FailoverTest < Test::Unit::TestCase
     assert_equal(2, rms.get("a"))
     assert_equal(rms.acting_master, rms.failover_slaves[0])
   end
+
+  def test_timeout_doesnt_failover
+    master=FakeRedisClient.new
+    def master.set(key, val)
+      @call+=1
+      if (@call<@max_delayed_calls)
+        puts "sleeping 15 seconds(#{@call})"
+        sleep(15)
+      end
+
+      @hash[@db][key]=val
+      "OK"
+    end
+
+    rms = RedisMasterSlave.new(master,[FakeRedisClient.new,FakeRedisClient.new])
+    rms.redis_timeout=1
+    rms.redis_retry_times=3
+
+    # Testing if it fails once, then recovers.
+    master.call=0
+    master.max_delayed_calls=1
+    assert_equal(nil, rms.get("a"))
+    assert_raise RedisMasterSlave::FailoverEvent do
+      rms.set("a",2)
+    end
+    assert_equal(2, rms.get("a"))
+    assert_equal(rms.acting_master, master)
+
+    # Testing if it fails 2 times in a row, then recovers.
+    master.call=0
+    master.max_delayed_calls=2
+    assert_raise RedisMasterSlave::FailoverEvent do
+      rms.set("a",3)
+    end
+    assert_equal(3, rms.get("a"))
+    assert_equal(rms.acting_master, master)
+  end
+
 end

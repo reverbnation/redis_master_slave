@@ -1,6 +1,7 @@
 require 'uri'
 require 'timeout'
 module RedisMasterSlave
+  class FailoverEvent < StandardError; end
   #
   # Wrapper around a pair of Redis connections, one master and one
   # slave.
@@ -99,6 +100,7 @@ module RedisMasterSlave
         rescue Timeout::Error
           puts "rescuing timeout #{i} #{j}"
           if (i+=1)>=@redis_retry_times
+            puts "failover!"
             failover!
             i=0
             j+=1
