@@ -19,21 +19,12 @@ module RedisMasterSlave
     # hashes, or Redis clients.
     #
     def initialize(*args)
-      case args.size
-      when 1
-        # config = args.first[Rails.env]
-        config = args.first[ENV["RAILS_ENV"]]
-        raise ArgumentError, "Poorly formatted config.  Please include environment, master, and slave" if config.nil?
-        master_config = config['master'] || config[:master]
-        slave_configs = config['slaves'] || config[:slaves] || {}
-      when 2
-        master_config, slave_configs = *args
-      else
-        raise ArgumentError, "wrong number of arguments (#{args.size} for 1..2)"
-      end
+      master_config, slave_configs = *args
+      raise ArgumentError, "wrong number of arguments (#{args.size} for 1..2)" if args.size > 2
 
       @acting_master = @master = make_client(master_config) or
         extend ReadOnly
+      slave_configs ||= {}
       @failover_slaves = slave_configs.map{|config| make_client(config)}
       @failover_index  = 0
       @redis_timeout=15
@@ -86,6 +77,15 @@ module RedisMasterSlave
       @acting_master = next_failover_slave
     end
 
+    # Specifically for transactions.  EXEC, DISCARD, UNWATCH and WATCH are handled as normal.
+    def multi
+      if !block_given?
+        @acting_master.multi
+      else
+        @acting_master.multi{yield}
+      end
+    end
+
     # This works, but is ugly.
     # TODO: make the method_missing memoize a class method
     def method_missing(method, *params, &block) # :nodoc:
@@ -94,7 +94,7 @@ module RedisMasterSlave
         i,j=0,0
         begin
           Timeout.timeout(@redis_timeout) do
-            @acting_master.send(method, *params)
+            @acting_master.send(method, *params, &block)
           end
         rescue Timeout::Error
           if (i+=1)>=@redis_retry_times
@@ -125,6 +125,7 @@ module RedisMasterSlave
     private
 
     def make_client(config)
+      raise ArgumentError, "Poorly formatted config argument.  Please include environment, master, and slave" if config.nil?
       case config
       when String
         # URL like redis://localhost:6379.
@@ -133,7 +134,7 @@ module RedisMasterSlave
       when Hash
         # Hash of Redis client options (string keys ok).
         redis_config = {}
-        config.each do |key, value|
+        config[ENV["RAILS_ENV"]].each do |key, value|
           redis_config[key.to_sym] = value
         end
         Redis.new(redis_config)

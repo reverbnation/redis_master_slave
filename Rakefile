@@ -1,9 +1,9 @@
 require 'ritual'
-# require 'rake/testtask'
+require 'rake/testtask'
 
-# Rake::TestTask.new do |t|
-#   t.libs << 'test'
-# end
+Rake::TestTask.new do |t|
+  t.libs << 'test'
+end
 
 # desc "Run tests"
 # task :default => :test

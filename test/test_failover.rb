@@ -6,16 +6,24 @@ require 'test/unit'
 require 'mocha'
 require 'redis_master_slave'
 
+PORT    = 6379
+OPTIONS = {:port => PORT, :db => 15, :timeout => 3}
+NODES   = ["redis://127.0.0.1:6380/15"]
+
 class FakeRedisClient
   attr_accessor :db
   attr_accessor :call
   attr_accessor :max_delayed_calls
+  attr_accessor :in_multi_block
+  attr_accessor :queue
 
   def initialize
     @hash = {0=>{}}
     @db = 0
     @max_delayed_calls = 0
     @call = 0
+    @in_multi_block=nil
+    @queue=nil
   end
 
   def get(key)
@@ -35,21 +43,57 @@ class FakeRedisClient
   def select(i)
     @db=i
   end
+
+  # TODO: Stub out MULTI and EXEC
 end
 
 class FailoverTest < Test::Unit::TestCase
   def test_master
     rms = RedisMasterSlave.new(FakeRedisClient.new,[FakeRedisClient.new,FakeRedisClient.new])
 
-    # rms.acting_master.expects(:set).with("a",2).returns("OK")
-    # rms.acting_master.expects(:get).with("a").returns(2)
-    # rms.acting_master.expects(:set).with("a",3).returns("OK")
-    # rms.acting_master.expects(:get).with("a").returns(3)
     assert_equal(nil, rms.get("a"))
     rms.set("a",2)
     assert_equal(2, rms.get("a"))
     rms.set("a",3)
     assert_equal(3, rms.get("a"))
+  end
+
+  # This currently requires a real running redis instance.
+  def test_master_multi_block
+    rms = RedisMasterSlave.new(Redis.new(OPTIONS))
+
+    assert_equal(rms.multi {rms.set("a",2);rms.get("a")}, 
+                 ["OK", "2"])
+    assert_equal(rms.get("a"),"2")
+    assert_equal(rms.multi do
+                   rms.set("b",3);
+                   rms.get("b")
+                   rms.get("a")
+                   rms.set("a",4);
+                 end, 
+                 ["OK", "3", "2", "OK"])
+    assert_equal(rms.get("a"),"4")
+  end
+
+  # TODO: add WATCH and UNWATCH tests.
+  def test_master_multi
+    rms = RedisMasterSlave.new(Redis.new(OPTIONS))
+
+    # Make sure you can discard the transaction
+    assert_equal(rms.set("a",1), "OK")
+    assert_equal(rms.multi, "OK")
+    assert_equal(rms.set("a",2), "QUEUED")
+    assert_equal(rms.get("a"), "QUEUED")
+    assert_equal(rms.discard, "OK")
+    assert_equal(rms.get("a"), "1")
+
+    # Make sure you can commit the transaction
+    assert_equal(rms.multi, "OK")
+    assert_equal(rms.set("a",2), "QUEUED")
+    assert_equal(rms.get("a"), "QUEUED")
+    assert_equal(rms.exec, ["OK", "2"])
+    assert_equal(rms.get("a"), "2")
+
   end
   
   def test_select
