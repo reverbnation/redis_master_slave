@@ -1,3 +1,7 @@
+== 0.1.6 2012-05-03
+
+ * Setting up failover slaves to only connect when failing over instead of initially.
+
 == 0.1.5 2012-05-01
 
  * Adding transaction support to failover
