@@ -10,8 +10,6 @@ module RedisMasterSlave
   # master.
   #
   class Client
-    attr_accessor :redis_timeout
-    attr_accessor :redis_retry_times
     #
     # Create a new client.
     #
@@ -19,16 +17,17 @@ module RedisMasterSlave
     # hashes, or Redis clients.
     #
     def initialize(*args)
-      master_config, slave_configs = *args
+      @master_config, @slave_configs = *args
       raise ArgumentError, "wrong number of arguments (#{args.size} for 1..2)" if args.size > 2
 
-      @acting_master = @master = make_client(master_config) or
+      @acting_master = @master = make_client(@master_config) or
         extend ReadOnly
-      slave_configs ||= {}
-      @failover_slaves = slave_configs.map{|config| make_client(config)}
+      @slave_configs ||= {}
       @failover_index  = 0
+      @failover_slaves = {}
       @redis_timeout=15
       @redis_retry_times=5
+      @mode="failover"
     end
 
     #
@@ -52,13 +51,23 @@ module RedisMasterSlave
     attr_accessor :failover_index
 
     #
-    # Return the next failover slave to use.
+    # Amount of time before redis will timeout
+    # 
+    attr_accessor :redis_timeout
+
     #
-    def next_failover_slave
-      slave = @failover_slaves[@failover_index]
-      @failover_index = (@failover_index + 1) % @failover_slaves.size
-      slave
-    end
+    # Number of times to timeout before redis will failover to slave
+    # 
+    attr_accessor :redis_retry_times
+
+    #
+    # Current Database being used by active_master
+    # 
+    attr_accessor :current_db
+
+    #
+    # Mode for the master_slave to operate: "failover" or "dry_run"
+    attr_accessor :mode
 
     #
     # Select a specific db for all redis masters and slaves
@@ -66,15 +75,28 @@ module RedisMasterSlave
     # TODO: make this non-blocking so that if one fails, they don't all fail.
     # 
     def select(db)
-      @master.select(db) && 
-        @failover_slaves.each{|s| s.select(db)}
+      @current_db=db
+      @master.select(db)
     end
 
     #
     # Failover to the next slave
     # 
     def failover!
-      @acting_master = next_failover_slave
+      if @mode=="failover"
+        @acting_master = next_failover_slave
+        # Make sure to stay on same db as old master.
+        @acting_master.select(@current_db)
+      end
+    end
+
+    #
+    # Return the next failover slave to use.  Initialized the redis instance if necessary.
+    #
+    def next_failover_slave
+      slave = @failover_slaves[@failover_index] ||= make_client(@slave_configs[@failover_index])
+      @failover_index = (@failover_index + 1) % @slave_configs.size
+      slave
     end
 
     # Specifically for transactions.  EXEC, DISCARD, UNWATCH and WATCH are handled as normal.
@@ -104,7 +126,7 @@ module RedisMasterSlave
           end
           
           # make sure we only failover if there's a slave
-          if (j<@failover_slaves.size)
+          if (j<@slave_configs.size)
             retry
           end
         ensure
@@ -125,6 +147,7 @@ module RedisMasterSlave
     private
 
     def make_client(config)
+      # puts "make_client(config) = #{config}"
       raise ArgumentError, "Poorly formatted config argument.  Please include environment, master, and slave" if config.nil?
       case config
       when String
