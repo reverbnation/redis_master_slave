@@ -137,6 +137,15 @@ module RedisMasterSlave
       end
     end
 
+    # helpful for testing
+    def throw_failover_event_exception
+      raise RedisMasterSlave::FailoverEvent
+    end
+
+    def throw_general_exception
+      raise Exception
+    end
+
     def respond_to_with_redis?(symbol, include_private=false)
       respond_to_without_redis?(symbol, include_private) || 
         @acting_master.respond_to?(symbol, include_private)
@@ -147,8 +156,8 @@ module RedisMasterSlave
     private
 
     def make_client(config)
-      # puts "make_client(config) = #{config}"
       raise ArgumentError, "Poorly formatted config argument.  Please include environment, master, and slave" if config.nil?
+      # puts "make_client(config) = #{config}"
       case config
       when String
         # URL like redis://localhost:6379.
@@ -157,7 +166,7 @@ module RedisMasterSlave
       when Hash
         # Hash of Redis client options (string keys ok).
         redis_config = {}
-        config[ENV["RAILS_ENV"]].each do |key, value|
+        config.each do |key, value|
           redis_config[key.to_sym] = value
         end
         Redis.new(redis_config)

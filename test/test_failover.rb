@@ -1,4 +1,3 @@
-ENV["RAILS_ENV"] = "test"
 DEBUG=false
 
 require 'rubygems'
