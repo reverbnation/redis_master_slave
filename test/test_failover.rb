@@ -99,12 +99,15 @@ class FailoverTest < Test::Unit::TestCase
   end
   
   def test_next_failover_slave
-    rms = RedisMasterSlave.new(FakeRedisClient.new,[FakeRedisClient.new,FakeRedisClient.new])
+    master=FakeRedisClient.new("master")
+    slave0=FakeRedisClient.new("slave0")
+    slave1=FakeRedisClient.new("slave1")
+    rms = RedisMasterSlave.new(master,[slave0,slave1])
     
-    assert_equal(rms.next_failover_slave, rms.failover_slaves[0])
-    assert_equal(rms.next_failover_slave, rms.failover_slaves[1])
-    assert_equal(rms.next_failover_slave, rms.failover_slaves[0])
-    assert_equal(rms.next_failover_slave, rms.failover_slaves[1])
+    assert_equal(slave0, rms.next_failover_slave)
+    assert_equal(slave1, rms.next_failover_slave)
+    assert_nil(rms.next_failover_slave)
+    assert_nil(rms.next_failover_slave)
   end
   
   def test_manual_failover
@@ -120,7 +123,7 @@ class FailoverTest < Test::Unit::TestCase
     assert_equal(slave0, rms.acting_master)
     rms.failover!
     assert_equal(slave1, rms.acting_master)
-    assert_equal(0,rms.failover_index)
+    assert_equal(2,rms.failover_index)
   end
 
   def test_simple_failover
@@ -129,8 +132,8 @@ class FailoverTest < Test::Unit::TestCase
     slave1=FakeRedisClient.new("slave1")
     master.max_delayed_calls=10
     rms = RedisMasterSlave.new(master,[slave0,slave1])
-    rms.redis_timeout=1
-    rms.redis_retry_times=3
+    rms.timeout=1
+    rms.retry_times=3
 
     assert_nil(rms.get("a"))
     assert_raise RedisMasterSlave::FailoverEvent do 
@@ -147,8 +150,8 @@ class FailoverTest < Test::Unit::TestCase
 
     master.max_delayed_calls=10
     rms = RedisMasterSlave.new(master,[slave0,slave1])
-    rms.redis_timeout=1
-    rms.redis_retry_times=3
+    rms.timeout=1
+    rms.retry_times=3
     rms.select(2)
 
     assert_equal(2,rms.db)
@@ -167,8 +170,8 @@ class FailoverTest < Test::Unit::TestCase
 
 
     rms = RedisMasterSlave.new(master,[FakeRedisClient.new,FakeRedisClient.new])
-    rms.redis_timeout=1
-    rms.redis_retry_times=3
+    rms.timeout=1
+    rms.retry_times=3
 
     # Testing if it fails once, then recovers.
     master.max_delayed_calls=1
@@ -195,8 +198,8 @@ class FailoverTest < Test::Unit::TestCase
     slave1=FakeRedisClient.new("slave1")
 
     rms = RedisMasterSlave.new(master,[slave0,slave1])
-    rms.redis_timeout=1
-    rms.redis_retry_times=3
+    rms.timeout=1
+    rms.retry_times=3
     master.max_delayed_calls=100
     # Make sure it fails over to slave0 first
     assert_equal(nil, rms.get("a"))
@@ -236,8 +239,10 @@ class FailoverTest < Test::Unit::TestCase
     assert_raise RedisMasterSlave::FailoverEvent do 
       rms.set("a",4)
     end
-    assert_equal(4, rms.get("a"))
-    assert_equal(rms.acting_master, slave0)
+    assert_raise RedisMasterSlave::PermanentFail do 
+      rms.get("a")
+    end
+    assert_nil(rms.acting_master)
   end    
   
   def test_no_init_slave_connection
@@ -257,11 +262,13 @@ class FailoverTest < Test::Unit::TestCase
     assert_equal(slave0, rms.failover_slaves[0])
     assert_equal(slave1, rms.failover_slaves[1])
     assert_equal(2, rms.failover_slaves.size)
-    rms.failover!
-    assert_equal(slave0, rms.acting_master)
+    assert_raise RedisMasterSlave::PermanentFail do
+      rms.failover!
+    end
+    assert_nil(rms.acting_master)
     assert_equal(slave0, rms.failover_slaves[0])
     assert_equal(slave1, rms.failover_slaves[1])
-    assert_equal(2, rms.failover_slaves.size)
+    assert_equal(3, rms.failover_slaves.size)
   end
 
   def test_dry_run
@@ -287,8 +294,8 @@ class FailoverTest < Test::Unit::TestCase
     slave1=FakeRedisClient.new("slave1")
     master.max_delayed_calls=10
     rms = RedisMasterSlave.new(master,[slave0,slave1])
-    rms.redis_timeout=1
-    rms.redis_retry_times=3
+    rms.timeout=1
+    rms.retry_times=3
     rms.mode="dry_run"
     rms.select(2)
 
