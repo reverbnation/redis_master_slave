@@ -2,6 +2,7 @@ require 'uri'
 require 'timeout'
 module RedisMasterSlave
   class FailoverEvent < StandardError; end
+  class PermanentFail < StandardError; end
   #
   # Wrapper around a pair of Redis connections, one master and one
   # slave.
@@ -74,28 +75,32 @@ module RedisMasterSlave
     #
     def select(db)
       Rails.logger.debug("RedisMasterSlave:select(#{db}) on acting_master: #{@acting_master}")
-      i,j=0,@failover_index
+      i=0
+      remaining_failovers=@slave_configs.size - @failover_index # max num failovers
+      num_failovers=0
+      raise RedisMasterSlave::PermanentFail unless @acting_master
+
       begin
         Timeout.timeout(@timeout) do
           @acting_master.select(db)
         end
         @current_db=db
-      rescue Timeout::Error, Errno::ECONNREFUSED
-        Rails.logger.debug("RedisMasterSlave: Error caught in select(#{db}) (i:#{i}; j:#{j})")
+      rescue Timeout::Error, Errno::ECONNREFUSED => e
+        Rails.logger.debug("RedisMasterSlave: Error caught in select(#{db}) (i:#{i}; j:#{remaining_failovers})")
         if (i+=1)>=@retry_times
           i=0
-          j+=1
+          remaining_failovers-=1
+          num_failovers+=1
           failover!(true)
         end
         
         # make sure we only failover if there's a slave
-        if (j<=@slave_configs.size)
-          Rails.logger.debug("RedisMasterSlave: retrying (i:#{i}; j:#{j})")
+        if (remaining_failovers>=0)
+          Rails.logger.debug("RedisMasterSlave: retrying (i:#{i}; j:#{remaining_failovers})")
           retry
         end
       ensure
-        Rails.logger.debug("RedisMasterSlave: ensure (i:#{i}; j:#{j})")
-        raise RedisMasterSlave::FailoverEvent if (i>0) || (j>0)
+        raise RedisMasterSlave::FailoverEvent if num_failovers>0
       end
     end
 
@@ -106,8 +111,11 @@ module RedisMasterSlave
       Rails.logger.debug("RedisMasterSlave: failover!")
       if @mode=="failover"
         @acting_master = next_failover_slave
+        raise RedisMasterSlave::PermanentFail unless @acting_master
+
         # Make sure to stay on same db as old master.
         @acting_master.select(@current_db) unless skip_select
+        # raise RedisMasterSlave::FailoverEvent
       end
     end
 
@@ -116,8 +124,10 @@ module RedisMasterSlave
     #
     def next_failover_slave
       Rails.logger.debug("RedisMasterSlave: next_failover_slave: failover_index: #{@failover_index}")
+
       slave = @failover_slaves[@failover_index] ||= make_client(@slave_configs[@failover_index])
-      @failover_index = (@failover_index + 1) % @slave_configs.size
+      # @failover_index = (@failover_index + 1) % @slave_configs.size
+      @failover_index+=1
       slave
     end
 
@@ -134,6 +144,7 @@ module RedisMasterSlave
     # TODO: make the method_missing memoize a class method
     def method_missing(method, *params, &block) # :nodoc:
       Rails.logger.debug("RedisMasterSlave:#{method}(#{params*', '})")
+      raise RedisMasterSlave::PermanentFail unless @acting_master
       if @acting_master.respond_to?(method)
         i,j=0,0
         begin
@@ -181,8 +192,7 @@ module RedisMasterSlave
 
     def make_client(config)
       Rails.logger.debug("RedisMasterSlave: make_client(#{config})")
-      raise ArgumentError, "Poorly formatted config argument.  Please include environment, master, and slave" if config.nil?
-      # puts "make_client(config) = #{config}"
+      # raise ArgumentError, "Poorly formatted config argument.  Please include environment, master, and slave" if config.nil?
       case config
       when String
         # URL like redis://localhost:6379.
