@@ -25,8 +25,8 @@ module RedisMasterSlave
       @slave_configs ||= {}
       @failover_index  = 0
       @failover_slaves = {}
-      @redis_timeout=15
-      @redis_retry_times=5
+      @timeout=15
+      @retry_times=5
       @mode="failover"
     end
 
@@ -53,12 +53,12 @@ module RedisMasterSlave
     #
     # Amount of time before redis will timeout
     # 
-    attr_accessor :redis_timeout
+    attr_accessor :timeout
 
     #
     # Number of times to timeout before redis will failover to slave
     # 
-    attr_accessor :redis_retry_times
+    attr_accessor :retry_times
 
     #
     # Current Database being used by active_master
@@ -72,21 +72,42 @@ module RedisMasterSlave
     #
     # Select a specific db for all redis masters and slaves
     #
-    # TODO: make this non-blocking so that if one fails, they don't all fail.
-    # 
     def select(db)
-      @current_db=db
-      @master.select(db)
+      Rails.logger.debug("RedisMasterSlave:select(#{db}) on acting_master: #{@acting_master}")
+      i,j=0,@failover_index
+      begin
+        Timeout.timeout(@timeout) do
+          @acting_master.select(db)
+        end
+        @current_db=db
+      rescue Timeout::Error, Errno::ECONNREFUSED
+        Rails.logger.debug("RedisMasterSlave: Error caught in select(#{db}) (i:#{i}; j:#{j})")
+        if (i+=1)>=@retry_times
+          i=0
+          j+=1
+          failover!(true)
+        end
+        
+        # make sure we only failover if there's a slave
+        if (j<=@slave_configs.size)
+          Rails.logger.debug("RedisMasterSlave: retrying (i:#{i}; j:#{j})")
+          retry
+        end
+      ensure
+        Rails.logger.debug("RedisMasterSlave: ensure (i:#{i}; j:#{j})")
+        raise RedisMasterSlave::FailoverEvent if (i>0) || (j>0)
+      end
     end
 
     #
     # Failover to the next slave
     # 
-    def failover!
+    def failover!(skip_select = false)
+      Rails.logger.debug("RedisMasterSlave: failover!")
       if @mode=="failover"
         @acting_master = next_failover_slave
         # Make sure to stay on same db as old master.
-        @acting_master.select(@current_db)
+        @acting_master.select(@current_db) unless skip_select
       end
     end
 
@@ -94,6 +115,7 @@ module RedisMasterSlave
     # Return the next failover slave to use.  Initialized the redis instance if necessary.
     #
     def next_failover_slave
+      Rails.logger.debug("RedisMasterSlave: next_failover_slave: failover_index: #{@failover_index}")
       slave = @failover_slaves[@failover_index] ||= make_client(@slave_configs[@failover_index])
       @failover_index = (@failover_index + 1) % @slave_configs.size
       slave
@@ -111,22 +133,24 @@ module RedisMasterSlave
     # This works, but is ugly.
     # TODO: make the method_missing memoize a class method
     def method_missing(method, *params, &block) # :nodoc:
-      # puts("redis_master_slave:#{method}(#{params*', '})")
+      Rails.logger.debug("RedisMasterSlave:#{method}(#{params*', '})")
       if @acting_master.respond_to?(method)
         i,j=0,0
         begin
-          Timeout.timeout(@redis_timeout) do
+          Timeout.timeout(@timeout) do
             @acting_master.send(method, *params, &block)
           end
-        rescue Timeout::Error
-          if (i+=1)>=@redis_retry_times
+        rescue Timeout::Error, Errno::ECONNREFUSED
+          Rails.logger.debug("RedisMasterSlave: Error Caught in call #{method}(#{params}) (i:#{i}; j:#{j})")
+          if (i+=1)>=@retry_times
             failover!
             i=0
             j+=1
           end
           
           # make sure we only failover if there's a slave
-          if (j<@slave_configs.size)
+          if (j<@slave_configs.size) && @mode == "failover"
+            Rails.logger.debug("RedisMasterSlave: retrying (i:#{i}; j:#{j})")
             retry
           end
         ensure
@@ -156,6 +180,7 @@ module RedisMasterSlave
     private
 
     def make_client(config)
+      Rails.logger.debug("RedisMasterSlave: make_client(#{config})")
       raise ArgumentError, "Poorly formatted config argument.  Please include environment, master, and slave" if config.nil?
       # puts "make_client(config) = #{config}"
       case config
