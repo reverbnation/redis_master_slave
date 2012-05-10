@@ -29,6 +29,7 @@ module RedisMasterSlave
       @timeout=15
       @retry_times=5
       @mode="failover"
+      @current_db = 0
     end
 
     #
@@ -75,11 +76,9 @@ module RedisMasterSlave
     #
     def select(db)
       # Rails.logger.debug("RedisMasterSlave:select(#{db}) on acting_master: #{@acting_master}")
-      raise RedisMasterSlave::PermanentFail unless @acting_master
-
       i=0
       remaining_failovers = (@mode=="failover") ? @slave_configs.size - @failover_index : 0
-      failover_ctr=0
+      @failover_ctr=0
 
       begin
         Timeout.timeout(@timeout) do
@@ -91,7 +90,7 @@ module RedisMasterSlave
         if (i+=1)>=@retry_times
           i=0
           remaining_failovers-=1
-          failover_ctr+=1
+          @failover_ctr+=1
           failover!(true)
         end
         
@@ -101,7 +100,7 @@ module RedisMasterSlave
           retry
         end
       ensure
-        raise RedisMasterSlave::FailoverEvent if failover_ctr>0
+        raise RedisMasterSlave::FailoverEvent if @failover_ctr>0
       end
     end
 
@@ -111,9 +110,13 @@ module RedisMasterSlave
     def failover!(skip_select = false)
       # Rails.logger.debug("RedisMasterSlave: failover!")
       if @mode=="failover"
-        @acting_master = next_failover_slave
-        raise RedisMasterSlave::PermanentFail unless @acting_master
-
+        next_slave = next_failover_slave!
+        unless next_slave
+          # Leaving this > 0 will trump the PermanentFail error with a Failover Event
+          @failover_ctr=0
+          raise RedisMasterSlave::PermanentFail 
+        end
+        @acting_master = next_slave
         # Make sure to stay on same db as old master.
         @acting_master.select(@current_db) unless skip_select
         # raise RedisMasterSlave::FailoverEvent
@@ -123,13 +126,10 @@ module RedisMasterSlave
     #
     # Return the next failover slave to use.  Initialized the redis instance if necessary.
     #
-    def next_failover_slave
-      # Rails.logger.debug("RedisMasterSlave: next_failover_slave: failover_index: #{@failover_index}")
-
-      slave = @failover_slaves[@failover_index] ||= make_client(@slave_configs[@failover_index])
-      # @failover_index = (@failover_index + 1) % @slave_configs.size
-      @failover_index+=1
-      slave
+    def next_failover_slave!
+      # Rails.logger.debug("RedisMasterSlave: next_failover_slave!: failover_index: #{@failover_index}")
+      @failover_index=[@failover_index, @slave_configs.size].min + 1
+      @failover_slaves[@failover_index-1] ||= make_client(@slave_configs[@failover_index-1])
     end
 
     # Specifically for transactions.  EXEC, DISCARD, UNWATCH and WATCH are handled as normal.
@@ -145,28 +145,33 @@ module RedisMasterSlave
     # TODO: make the method_missing memoize a class method
     def method_missing(method, *params, &block) # :nodoc:
       # Rails.logger.debug("RedisMasterSlave:#{method}(#{params*', '})")
-      raise RedisMasterSlave::PermanentFail unless @acting_master
       if @acting_master.respond_to?(method)
-        i,j=0,0
+
+        i=0
+        remaining_failovers = (@mode=="failover") ? [@slave_configs.size - @failover_index,0].max : 0
+        @failover_ctr=0
+
         begin
           Timeout.timeout(@timeout) do
             @acting_master.send(method, *params, &block)
           end
+
         rescue Timeout::Error, Errno::ECONNREFUSED
           # Rails.logger.debug("RedisMasterSlave: Error Caught in call #{method}(#{params}) (i:#{i}; j:#{j})")
           if (i+=1)>=@retry_times
-            failover!
             i=0
-            j+=1
+            remaining_failovers-=1
+            @failover_ctr+=1
+            failover!
           end
           
           # make sure we only failover if there's a slave
-          if (j<@slave_configs.size) && @mode == "failover"
-            # Rails.logger.debug("RedisMasterSlave: retrying (i:#{i}; j:#{j})")
+          if (remaining_failovers>=0)
+            # Rails.logger.debug("RedisMasterSlave: retrying (i:#{i}; j:#{remaining_failovers})")
             retry
           end
         ensure
-          raise RedisMasterSlave::FailoverEvent if (i>0) || (j>0)
+          raise RedisMasterSlave::FailoverEvent if @failover_ctr>0
         end
       else
         super
