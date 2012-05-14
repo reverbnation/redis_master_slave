@@ -71,8 +71,13 @@ module RedisMasterSlave
     # Mode for the master_slave to operate: "failover" or "dry_run"
     attr_accessor :mode
 
+    # :type needs to go the the Redis instance
+    undef_method :type
+
     #
     # Select a specific db for all redis masters and slaves
+    #
+    # TODO: This needs to be refactored with method_missing, as it's the same logic
     #
     def select(db)
       # Rails.logger.debug("RedisMasterSlave:select(#{db}) on acting_master: #{@acting_master}")
@@ -141,8 +146,10 @@ module RedisMasterSlave
       end
     end
 
-    # This works, but is ugly.
+    # 
     # TODO: make the method_missing memoize a class method
+    # TODO: This needs to be refactored with seled method, as it's the same logic
+    # 
     def method_missing(method, *params, &block) # :nodoc:
       # Rails.logger.debug("RedisMasterSlave:#{method}(#{params*', '})")
       if @acting_master.respond_to?(method)

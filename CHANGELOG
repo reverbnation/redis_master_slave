@@ -1,3 +1,7 @@
+== LATEST
+
+ * making type a pass-through method
+
 == 0.1.6 2012-05-03
 
  * Setting up failover slaves to only connect when failing over instead of initially.
