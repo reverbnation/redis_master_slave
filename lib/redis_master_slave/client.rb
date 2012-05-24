@@ -1,5 +1,7 @@
 require 'uri'
 require 'timeout'
+require 'redis/namespace'
+
 module RedisMasterSlave
   class FailoverEvent < StandardError; end
   class PermanentFail < StandardError; end
@@ -24,12 +26,14 @@ module RedisMasterSlave
       @acting_master = @master = make_client(@master_config) or
         extend ReadOnly
       @slave_configs ||= {}
-      @failover_index  = 0
-      @failover_slaves = {}
-      @timeout=15
-      @retry_times=5
-      @mode="failover"
-      @current_db = 0
+      @failover_index    = 0
+      @failover_slaves   = {}
+      @timeout           = 15
+      @retry_times       = 5
+      @mode              = "failover"
+      @current_db      ||= 0
+      @namespace_rms   ||= nil
+      @status            = "active"
     end
 
     #
@@ -69,7 +73,18 @@ module RedisMasterSlave
 
     #
     # Mode for the master_slave to operate: "failover" or "dry_run"
+    #
     attr_accessor :mode
+
+    #
+    # namespace_rms defined for the Redis::Namespace object.  Default = nil
+    #
+    attr_accessor :namespace_rms
+
+    #
+    # current state of the instance
+    #
+    attr_accessor :status
 
     # :type needs to go the the Redis instance
     undef_method :type
@@ -116,9 +131,11 @@ module RedisMasterSlave
       # Rails.logger.debug("RedisMasterSlave: failover!")
       if @mode=="failover"
         next_slave = next_failover_slave!
+        @status = "failover"
         unless next_slave
           # Leaving this > 0 will trump the PermanentFail error with a Failover Event
           @failover_ctr=0
+          @status = "permanent_fail"
           raise RedisMasterSlave::PermanentFail 
         end
         @acting_master = next_slave
@@ -144,6 +161,11 @@ module RedisMasterSlave
       else
         @acting_master.multi{yield}
       end
+    end
+
+    def namespace=(ns=nil)
+      @namespace_rms = ns
+      @acting_master.namespace=ns
     end
 
     # 
@@ -204,19 +226,25 @@ module RedisMasterSlave
     private
 
     def make_client(config)
-      # Rails.logger.debug("RedisMasterSlave: make_client(#{config})")
+      # Rails.logger.debug("RedisMasterSlave: make_client(#{config.inspect})")
       case config
       when String
-        # URL like redis://localhost:6379.
+        # URL like redis://localhost:6379/db
         uri = URI.parse(config)
-        Redis.new(:host => uri.host, :port => uri.port)
+        db = uri.path.split("/")[1].to_i
+        db ||= 0
+
+        r = Redis.new(:host => uri.host, :port => uri.port, :db => db)
+        Redis::Namespace.new(@namespace_rms, :redis => r)
       when Hash
         # Hash of Redis client options (string keys ok).
         redis_config = {}
         config.each do |key, value|
           redis_config[key.to_sym] = value
         end
-        Redis.new(redis_config)
+        r = Redis.new(redis_config)
+        @namespace_rms = config[:namespace]
+        Redis::Namespace.new(@namespace_rms, :redis => r)
       else
         # Hopefully a client object.
         config
