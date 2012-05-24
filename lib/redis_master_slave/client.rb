@@ -216,9 +216,10 @@ module RedisMasterSlave
       raise Exception
     end
 
+    # Note that this drops the include_private parameter, as Namespace doesn't support it.
     def respond_to_with_redis?(symbol, include_private=false)
       respond_to_without_redis?(symbol, include_private) || 
-        @acting_master.respond_to?(symbol, include_private)
+        @acting_master.respond_to?(symbol)
     end
     alias_method :respond_to_without_redis?, :respond_to?
     alias_method :respond_to?, :respond_to_with_redis?
